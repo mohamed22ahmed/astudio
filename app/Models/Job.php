@@ -2,9 +2,12 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 class Job extends Model
 {
+    use HasFactory;
+
     protected $fillable = [
         'title',
         'description',
@@ -21,4 +24,24 @@ class Job extends Model
         'is_remote' => 'boolean',
         'published_at' => 'datetime',
     ];
+
+    public function languages()
+    {
+        return $this->belongsToMany(Language::class);
+    }
+
+    public function locations()
+    {
+        return $this->belongsToMany(Location::class);
+    }
+
+    public function categories()
+    {
+        return $this->belongsToMany(Category::class);
+    }
+
+    public function attributeValues()
+    {
+        return $this->hasMany(JobAttributeValue::class);
+    }
 }
