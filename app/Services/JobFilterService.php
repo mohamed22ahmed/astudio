@@ -2,247 +2,102 @@
 
 namespace App\Services;
 
-use App\Models\Job;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 class JobFilterService
 {
-    protected $query;
-    protected $filterParams;
+    protected Builder $query;
+    protected FilterParser $parser;
 
-    public function apply(Job $query, array $filterParams)
+    public function __construct(FilterParser $parser)
+    {
+        $this->parser = $parser;
+    }
+
+    public function apply(Builder $query, array|string $filters): Builder
     {
         $this->query = $query;
-        $this->filterParams = $filterParams;
-
-        foreach ($this->filterParams as $filter) {
-            $this->applyFilter($filter);
+        if (is_string($filters)) {
+            $filters = $this->parser->ParseConditions($filters);
         }
-
+        $this->applyFilters($filters);
         return $this->query;
     }
 
-    protected function applyFilter(array $filter)
+    protected function applyFilters(array $filters)
     {
-        $field = $filter['field'];
-        $operator = $filter['operator'];
-        $value = $filter['value'];
+        foreach ($filters as $filter) {
+            $this->applyCondition(
+                $filter['field'],
+                $filter['operator'],
+                $filter['value']
+            );
+        }
+    }
 
+    protected function applyCondition(string $field, string $operator, $value)
+    {
         if (Str::startsWith($field, 'attribute:')) {
-            $this->applyEavFilter($field, $operator, $value);
-        } elseif (in_array($field, ['languages', 'locations', 'categories'])) {
-            $this->applyRelationshipFilter($field, $operator, $value);
+            $this->applyAttributeFilter($field, $operator, $value);
+        } elseif ($field === 'languages') {
+            $this->applyLanguageFilter($operator, $value);
+        } elseif ($field === 'locations') {
+            $this->applyLocationFilter($operator, $value);
         } else {
-            $this->applyStandardFilter($field, $operator, $value);
+            $this->applyDirectFilter($field, $operator, $value);
         }
     }
 
-    protected function applyStandardFilter($field, $operator, $value)
+    protected function applyAttributeFilter(string $field, string $operator, $value)
     {
-        switch ($operator) {
-            case '=':
-                $this->query->where($field, $value);
-                break;
-            case '!=':
-                $this->query->where($field, '!=', $value);
-                break;
-            case '>':
-                $this->query->where($field, '>', $value);
-                break;
-            case '<':
-                $this->query->where($field, '<', $value);
-                break;
-            case '>=':
-                $this->query->where($field, '>=', $value);
-                break;
-            case '<=':
-                $this->query->where($field, '<=', $value);
-                break;
-            case 'LIKE':
-                $this->query->where($field, 'LIKE', "%{$value}%");
-                break;
-            case 'IN':
-                $this->query->whereIn($field, $value);
-                break;
-        }
-    }
-
-    protected function applyRelationshipFilter($relation, $operator, $value)
-    {
-        switch ($operator) {
-            case 'HAS_ANY':
-                $this->query->whereHas($relation, function($q) use ($value) {
-                    $q->whereIn('name', $value);
-                });
-                break;
-            case 'IS_ANY':
-                $this->query->whereHas($relation, function($q) use ($value) {
-                    $q->whereIn('id', $value);
-                });
-                break;
-            case 'EXISTS':
-                $this->query->whereHas($relation);
-                break;
-        }
-    }
-
-    protected function applyEavFilter($field, $operator, $value)
-    {
-        $attributeName = str_replace('attribute:', '', $field);
-
+        $attributeName = substr($field, 10);
         $this->query->whereHas('attributeValues', function($q) use ($attributeName, $operator, $value) {
             $q->whereHas('attribute', function($q) use ($attributeName) {
                 $q->where('name', $attributeName);
             });
 
             switch ($operator) {
-                case '=':
-                    $q->where('value', $value);
-                    break;
-                case '!=':
-                    $q->where('value', '!=', $value);
-                    break;
-                case '>':
-                    $q->where('value', '>', $value);
-                    break;
-                case '<':
-                    $q->where('value', '<', $value);
-                    break;
-                case '>=':
-                    $q->where('value', '>=', $value);
-                    break;
-                case '<=':
-                    $q->where('value', '<=', $value);
-                    break;
-                case 'LIKE':
-                    $q->where('value', 'LIKE', "%{$value}%");
-                    break;
-                case 'IN':
-                    $q->whereIn('value', $value);
-                    break;
+                case '=': case '!=': case '>': case '<': case '>=': case '<=':
+                $q->where('value', $operator, $value);
+                break;
             }
         });
     }
 
-    public function parseFilterString(string $filterString): array
+    protected function applyLanguageFilter(string $operator, $value)
     {
-        $filterString = trim($filterString);
-        $filters = [];
-        $currentPos = 0;
-        $length = strlen($filterString);
+        if ($operator === 'HAS_ANY') {
+            $this->query->whereHas('languages', function($q) use ($value) {
+                $q->whereIn('name', $value);
+            });
+        }
+    }
 
-        while ($currentPos < $length) {
-            $char = $filterString[$currentPos];
-
-            if ($char === '(') {
-                $endPos = $this->findMatchingClosingParenthesis($filterString, $currentPos);
-                $groupString = substr($filterString, $currentPos + 1, $endPos - $currentPos - 1);
-                $groupFilters = $this->parseFilterString($groupString);
-
-                $nextPart = substr($filterString, $endPos + 1);
-                $logicalOperator = $this->extractLogicalOperator($nextPart);
-
-                if ($logicalOperator) {
-                    $groupFilters['logical'] = strtolower($logicalOperator);
-                    $currentPos = $endPos + strlen($logicalOperator) + 1;
-                } else {
-                    $currentPos = $endPos + 1;
-                }
-
-                $filters[] = $groupFilters;
-            } else {
-                $condition = $this->extractCondition($filterString, $currentPos);
-                if ($condition) {
-                    $parsedCondition = $this->parseCondition($condition['condition']);
-
-                    if (isset($condition['logical_operator'])) {
-                        $parsedCondition['logical'] = strtolower($condition['logical_operator']);
+    protected function applyLocationFilter(string $operator, $value)
+    {
+        if ($operator === 'HAS_ANY') {
+            $this->query->whereHas('locations', function($q) use ($value) {
+                $q->where(function($query) use ($value) {
+                    foreach ($value as $location) {
+                        if ($location === 'Remote') {
+                            $query->orWhere('is_remote', true);
+                        } else {
+                            $query->orWhere('city', $location)
+                                ->orWhere('state', $location);
+                        }
                     }
-
-                    $filters[] = $parsedCondition;
-                    $currentPos += strlen($condition['full_match']);
-                } else {
-                    $currentPos++;
-                }
-            }
+                });
+            });
         }
-
-        return $filters;
     }
 
-    protected function findMatchingClosingParenthesis(string $string, int $startPos): int
+    protected function applyDirectFilter(string $field, string $operator, $value)
     {
-        $openCount = 1;
-        $currentPos = $startPos + 1;
-        $length = strlen($string);
-
-        while ($currentPos < $length && $openCount > 0) {
-            $char = $string[$currentPos];
-            if ($char === '(') {
-                $openCount++;
-            } elseif ($char === ')') {
-                $openCount--;
-            }
-            $currentPos++;
+        switch ($operator) {
+            case '=': case '!=': case '>': case '<': case '>=': case '<=':
+            $this->query->where($field, $operator, $value);
+            break;
         }
-
-        return $currentPos - 1;
-    }
-
-    protected function extractLogicalOperator(string $string): ?string
-    {
-        if (preg_match('/^\s*(AND|OR)\s*/i', $string, $matches)) {
-            return strtoupper($matches[1]);
-        }
-        return null;
-    }
-
-    protected function extractCondition(string $string, int $startPos): ?array
-    {
-        $pattern = '/(?<condition>[^\s()]+(\s*[^\s()]+\s*[^\s()]+)?)(?:\s*(?<logical_operator>AND|OR)\s*|$)/i';
-
-        if (preg_match($pattern, substr($string, $startPos), $matches)) {
-            return [
-                'condition' => trim($matches['condition']),
-                'logical_operator' => isset($matches['logical_operator']) ? $matches['logical_operator'] : null,
-                'full_match' => $matches[0]
-            ];
-        }
-
-        return null;
-    }
-
-    protected function parseCondition(string $condition): array
-    {
-        if (preg_match('/^(languages|locations|categories)\s+(HAS_ANY|IS_ANY|EXISTS)\s*\(([^)]+)\)$/i', $condition, $matches)) {
-            $values = array_map('trim', explode(',', $matches[3]));
-            return [
-                'field' => strtolower($matches[1]),
-                'operator' => strtoupper($matches[2]),
-                'value' => $values
-            ];
-        }
-
-        if (preg_match('/^([^\s=><!]+)\s*(=|!=|>|<|>=|<=|LIKE|IN)\s*(.+)$/i', $condition, $matches)) {
-            $field = $matches[1];
-            $operator = strtoupper($matches[2]);
-            $value = $matches[3];
-
-            if ($operator === 'IN' && preg_match('/^\(([^)]+)\)$/', $value, $inMatches)) {
-                $value = array_map('trim', explode(',', $inMatches[1]));
-            }
-
-            if (strpos($field, 'attribute:') === 0) {
-                $field = 'attribute:' . substr($field, 10);
-            }
-
-            return [
-                'field' => $field,
-                'operator' => $operator,
-                'value' => $value
-            ];
-        }
-
-        throw new \InvalidArgumentException("Invalid condition format: {$condition}");
     }
 }

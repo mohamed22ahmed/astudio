@@ -20,12 +20,10 @@ class JobController extends Controller
         $query = Job::query()->with(['languages', 'locations', 'categories', 'attributeValues.attribute']);
 
         if ($request->has('filter')) {
-            $filters = $this->filterService->parseFilterString($request->filter);
-            $query = $this->filterService->apply($query, $filters);
+            $query = $this->filterService->apply($query, $request->filter);
         }
 
         $jobs = $query->paginate(10);
-
         return response()->json($jobs);
     }
 }
